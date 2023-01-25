@@ -27,6 +27,8 @@ CAR_CONFIDENCE_THRESH = 70.0
 PERSON_CONFIDENCE_THRESH = 50.0
 # For the params we care about, hardcoding to this yml file is okay
 
+SKIP = 6
+
 nms_threshold = 0.5
 params = train.Params(f'projects/madeye.yml')
 obj_list = params.obj_list
@@ -158,6 +160,12 @@ def generate_dataset(inference_dir, rectlinear_dir, current_frame, orientation_t
     image_id = 0
     annotation_id = 0
     image_outdir = f'continual-learning/datasets/{project_name}/{set_type}'
+    annotations_outdir = f'continual-learning/datasets/{project_name}/annotations'
+    os.makedirs(annotations_outdir, exist_ok=True)
+    os.makedirs(image_outdir, exist_ok=True)
+
+    print('generating dataset')
+    print(orientation_to_frames)
     for o in orientation_to_frames:
         frames = orientation_to_frames[o]
         result_orientation_dir = os.path.join(inference_dir, o)
@@ -173,10 +181,8 @@ def generate_dataset(inference_dir, rectlinear_dir, current_frame, orientation_t
                 json_dict['images'].append({"id": image_id, "file_name": image_file, "width": 1280, "height": 720, "date_captured": "", "license": 1, "coco_url": "", "flickr_url": ""})
                 annotation_id = create_annotations(f, image_file, orientation_df, o, 'both', json_dict, image_id, annotation_id)
             image_id += 1
-    j
 
-    os.makedirs(f'continual-learning/datasets/{project_name}/annotations/', exist_ok=True)
-    with open(f'continual-learning/datasets/{project_name}/annotations/instances_{set_type}.json', 'w') as f_out:
+    with open(os.path.join(annotations_outdir , f'instances_{set_type}.json'), 'w') as f_out:
         json.dump(json_dict, f_out)
 
 def rank_orientations(orientation_to_count):
@@ -199,6 +205,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('inference', help='Path to inference dir ')
     ap.add_argument('rectlinear', help='Path to rectlinear dir ')
+    
+    ap.add_argument('frame_begin', type=int, help='Beginning frame num ')
+    ap.add_argument('frame_limit', type=int, help='Ending frame num ')
+
     ap.add_argument('actual', help='CSV with ground truth couns')
     ap.add_argument('modeltype', help='Model variant (e.g., yolov4, faster-rcnn, ssd-voc, tiny-yolov4)')
 
@@ -217,7 +227,6 @@ def main():
 
     if use_cuda:
         model.cuda(gpu)
-
         if use_float16:
             model.half()
 
@@ -267,7 +276,7 @@ def main():
     best_fixed_orientation = None
     orientation_to_historical_frames = {}
     orientation_to_training_frames = {}
-    for current_frame in frames:
+    for current_frame in range(args.frame_begin, args.frame_limit+1):
         if current_frame <= frame_bounds[0][1]:
             result_idx = 0
         elif current_frame <= frame_bounds[1][1]:
@@ -347,6 +356,8 @@ def main():
             orientation_to_historical_frames.clear()
             orientation_to_training_frames.clear()
             for f in range(sub_frame_begin, sub_frame_begin + int(0.3*(sub_frame_limit - sub_frame_begin))):
+                if f % SKIP != 0:
+                    continue
                 for o in orientation_to_count:
                     if o not in orientation_to_historical_frames:
                         orientation_to_historical_frames[o] = []
@@ -483,46 +494,49 @@ def main():
 
         params.train_set  = 'train'
         # Continual learnin
-  
-        orientation_to_val_frames = {} 
-        len_of_retraining_set = 0 
-        len_of_val_set = 0
-        # Add newest data to historical data
-        for o in orientation_to_training_frames:
-            orientation_to_historical_frames[o].extend(orientation_to_training_frames[o])
-            len_of_retraining_set += len(orientation_to_training_frames[o])
 
-        # Construct retraining set        
-        num_retraining_images = 50
-        while len_of_retraining_set < num_retraining_images:
-            o, _ = random.choice(list(orientation_to_historical_frames.items()))
-            new_frame = random.choice(orientation_to_historical_frames[o])
-            len_of_retraining_set += 1
-            if o not in orientation_to_training_frames:
-                orientation_to_training_frames[o] = []
-            orientation_to_training_frames[o].append(new_frame)
 
-        num_val_images = 20
-        while len_of_val_set < num_val_images:
-            o, _ = random.choice(list(orientation_to_historical_frames.items()))
-            new_frame = random.choice(orientation_to_historical_frames[o])
-            len_of_val_set += 1
-            if o not in orientation_to_val_frames:
-                orientation_to_val_frames[o] = []
+        if current_frame % 60 == 0:
 
-            orientation_to_val_frames[o].append(new_frame)
- 
-#        # Train set
-        generate_dataset(args.inference, args.rectlinear, current_frame, orientation_to_training_frames, 'train', saved_path, project_name)
-#        # Val set
-        generate_dataset(args.inference, args.rectlinear, current_frame, orientation_to_val_frames, 'val', saved_path, project_name)
-
-        
-        model_to_weights_path[model_type] = train.continual_train(params, model_type, model_to_weights_path[model_type], data_path, saved_path, project_name)
-        print('Saved weights ', model_to_weights_path[model_type])
-        model.load_state_dict(torch.load(model_to_weights_path[model_type], map_location=torch.device('cpu')))
-        model.requires_grad_(False)
-
+      
+            orientation_to_val_frames = {} 
+            len_of_retraining_set = 0 
+            len_of_val_set = 0
+            # Add newest data to historical data
+            for o in orientation_to_training_frames:
+                orientation_to_historical_frames[o].extend(orientation_to_training_frames[o])
+                len_of_retraining_set += len(orientation_to_training_frames[o])
+    
+            # Construct retraining set        
+            num_retraining_images = 30
+            while len_of_retraining_set < num_retraining_images:
+                o, _ = random.choice(list(orientation_to_historical_frames.items()))
+                new_frame = random.choice(orientation_to_historical_frames[o])
+                len_of_retraining_set += 1
+                if o not in orientation_to_training_frames:
+                    orientation_to_training_frames[o] = []
+                orientation_to_training_frames[o].append(new_frame)
+    
+            num_val_images = 7
+            while len_of_val_set < num_val_images:
+                o, _ = random.choice(list(orientation_to_historical_frames.items()))
+                new_frame = random.choice(orientation_to_historical_frames[o])
+    
+                len_of_val_set += 1
+                if o not in orientation_to_val_frames:
+                    orientation_to_val_frames[o] = []
+    
+                orientation_to_val_frames[o].append(new_frame)
+            # Train set
+            generate_dataset(args.inference, args.rectlinear, current_frame, orientation_to_training_frames, 'train', saved_path, project_name)
+    #        # Val set
+            generate_dataset(args.inference, args.rectlinear, current_frame, orientation_to_val_frames, 'val', saved_path, project_name)
+            
+            model_to_weights_path[model_type] = train.continual_train(params, model_type, model_to_weights_path[model_type], data_path, saved_path, project_name, num_epochs=10)
+            print('Saved weights ', model_to_weights_path[model_type])
+            model.load_state_dict(torch.load(model_to_weights_path[model_type], map_location=torch.device('cpu')))
+            model.requires_grad_(False)
+            orientation_to_training_frames.clear()
     if len(current_accuracies) == 0:
         all_accuracies.append(0.0)
     else:

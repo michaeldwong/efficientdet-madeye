@@ -61,7 +61,7 @@ def evaluate_coco(img_path, set_name, image_ids, coco, model, threshold=0.05):
     for image_id in tqdm(image_ids):
         image_info = coco.loadImgs(image_id)[0]
         image_path = img_path + image_info['file_name']
-
+        print('Processing ', image_path)
         ori_imgs, framed_imgs, framed_metas = preprocess(image_path, max_size=input_sizes[compound_coef], mean=params['mean'], std=params['std'])
         x = torch.from_numpy(framed_imgs[0])
 
@@ -90,36 +90,51 @@ def evaluate_coco(img_path, set_name, image_ids, coco, model, threshold=0.05):
         scores = preds['scores']
         class_ids = preds['class_ids']
         rois = preds['rois']
+#        print('Scores ', scores)
+#        print("Class ids ", class_ids)
+#        print('ROIs ', rois)
+        idx = 0
+        if len(scores) == 0:
+            continue
+        people_count = 0
+        car_count = 0
+        for i in range(0,len(scores)):
+            # Class id 0 is car, 1 is person
+            if scores[i] >= 0.2  and class_ids[i] == 0 :
+                car_count += 1
+            elif scores[i] >= 0.2 and class_ids[i] == 1:
+                people_count += 1
+        print('car count ', car_count, ' person count ', people_count)
 
-        if rois.shape[0] > 0:
-            # x1,y1,x2,y2 -> x1,y1,w,h
-            rois[:, 2] -= rois[:, 0]
-            rois[:, 3] -= rois[:, 1]
+#        if rois.shape[0] > 0:
+#            # x1,y1,x2,y2 -> x1,y1,w,h
+#            rois[:, 2] -= rois[:, 0]
+#            rois[:, 3] -= rois[:, 1]
+#
+#            bbox_score = scores
+#
+#            for roi_id in range(rois.shape[0]):
+#                score = float(bbox_score[roi_id])
+#                label = int(class_ids[roi_id])
+#                box = rois[roi_id, :]
+#
+#                image_result = {
+#                    'image_id': image_id,
+#                    'category_id': label + 1,
+#                    'score': float(score),
+#                    'bbox': box.tolist(),
+#                }
+#
+#                results.append(image_result)
 
-            bbox_score = scores
-
-            for roi_id in range(rois.shape[0]):
-                score = float(bbox_score[roi_id])
-                label = int(class_ids[roi_id])
-                box = rois[roi_id, :]
-
-                image_result = {
-                    'image_id': image_id,
-                    'category_id': label + 1,
-                    'score': float(score),
-                    'bbox': box.tolist(),
-                }
-
-                results.append(image_result)
-
-    if not len(results):
-        raise Exception('the model does not provide any valid output, check model architecture and the data input')
-
-    # write output
-    filepath = f'{set_name}_bbox_results.json'
-    if os.path.exists(filepath):
-        os.remove(filepath)
-    json.dump(results, open(filepath, 'w'), indent=4)
+#    if not len(results):
+#        raise Exception('the model does not provide any valid output, check model architecture and the data input')
+#
+#    # write output
+#    filepath = f'{set_name}_bbox_results.json'
+#    if os.path.exists(filepath):
+#        os.remove(filepath)
+#    json.dump(results, open(filepath, 'w'), indent=4)
 
 
 def _eval(coco_gt, image_ids, pred_json_path):
@@ -139,6 +154,9 @@ if __name__ == '__main__':
     SET_NAME = params['val_set']
     VAL_GT = f'datasets/{params["project_name"]}/annotations/instances_{SET_NAME}.json'
     VAL_IMGS = f'datasets/{params["project_name"]}/{SET_NAME}/'
+
+#    VAL_GT = f'/scratch/mdwong/efficientdet-train/datasets/{args.project}/annotations/instances_{SET_NAME}.json'
+#    VAL_IMGS = f'/scratch/mdwong/efficientdet-train/datasets/{args.project}/{SET_NAME}/'
     MAX_IMAGES = 10000
     coco_gt = COCO(VAL_GT)
     image_ids = coco_gt.getImgIds()[:MAX_IMAGES]

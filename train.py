@@ -80,7 +80,7 @@ class ModelWithLoss(nn.Module):
             cls_loss, reg_loss = self.criterion(classification, regression, anchors, annotations)
         return cls_loss, reg_loss
 
-def continual_train(params, model_type, weights_path, data_path, saved_path, project_name):
+def continual_train(params, model_type, weights_path, data_path, saved_path, project_name, num_epochs=10):
 
     # Hardcoded options
     batch_size = 8
@@ -93,7 +93,6 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
     lr = 1e-4
     optim = 'adamw'
     es_patience = 0
-    num_epochs = 1
     save_interval = 1000
   
     best_weights = weights_path
@@ -113,7 +112,6 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
     torch.cuda.set_device('cuda:1')
 
 
-    os.makedirs(saved_path, exist_ok=True)
 
     training_params = {'batch_size': batch_size,
                        'shuffle': True,
@@ -128,6 +126,8 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
                   'num_workers': num_workers}
 
     input_sizes = [512, 640, 768, 896, 1024, 1280, 1280, 1536, 1536]
+    print('Reading from ', os.path.join(data_path, project_name))
+    print('train set ', params.train_set)
     training_set = CocoDataset(root_dir=os.path.join(data_path, project_name), set=params.train_set,
                                transform=transforms.Compose([Normalizer(mean=params.mean, std=params.std),
                                                              Augmenter(),
@@ -202,7 +202,6 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
     min_loss = 0.0
     try:
         for epoch in range(num_epochs):
-            break
             last_epoch = step // num_iter_per_epoch
             if epoch < last_epoch:
                 continue
@@ -318,7 +317,9 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
     except KeyboardInterrupt:
         save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_{epoch}.pth', saved_path)
 
+    best_weights = get_last_weights(saved_path)
     print('FINISHED TRAIN LOOP')
+    print('best weights ', best_weights)
     return best_weights
 
 def train(opt):
