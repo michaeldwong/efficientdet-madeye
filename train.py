@@ -93,7 +93,7 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
     lr = 1e-4
     optim = 'adamw'
     es_patience = 0
-    save_interval = 1000
+    save_interval = 10
   
     best_weights = weights_path
  
@@ -215,7 +215,6 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
                 try:
                     imgs = data['img']
                     annot = data['annot']
-
                     if params.num_gpus == 1:
                         # if only one gpu, just send it to cuda:0
                         # elif multiple gpus, send it to multiple gpus in CustomDataParallel, not here
@@ -226,7 +225,6 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
                     cls_loss, reg_loss = model(imgs, annot, obj_list=params.obj_list)
                     cls_loss = cls_loss.mean()
                     reg_loss = reg_loss.mean()
-
                     loss = cls_loss + reg_loss
                     if loss == 0 or not torch.isfinite(loss):
                         continue
@@ -252,11 +250,9 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
                     step += 1
 
                     if step % save_interval == 0 and step > 0:
-                        save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_{epoch}.pth', saved_path)
-                        print('checkpoint...')
+                        save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_{epoch}.pth', os.path.join(saved_path, project_name))
                     if loss < min_loss:
-                        save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_min.pth', saved_path)
-                        print('min checkpoint...')
+                        save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_min.pth', os.path.join(saved_path, project_name))
 
                 except Exception as e:
                     print('[Error]', traceback.format_exc())
@@ -266,7 +262,6 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
 
             # VAlidation testing
             if epoch % val_interval == 0:
-                print('validation')
                 model.eval()
                 loss_regression_ls = []
                 loss_classification_ls = []
@@ -305,7 +300,7 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
                     best_loss = loss
                     best_epoch = epoch
 
-                    save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_{epoch}.pth', saved_path)
+                    save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_{epoch}.pth', os.path.join(saved_path, project_name))
                     best_weights = f'continual-learning/weights/efficientdet-d{compound_coef}_min.pth'
                 model.train()
 
@@ -315,10 +310,12 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
 
                     break
     except KeyboardInterrupt:
-        save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_{epoch}.pth', saved_path)
+        save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_{epoch}.pth', os.path.join(saved_path, project_name))
 
-    best_weights = get_last_weights(saved_path)
-    print('FINISHED TRAIN LOOP')
+    if len(os.listdir(os.path.join(saved_path, project_name))) == 0:
+        best_weights = weights_path
+    else: 
+        best_weights = get_last_weights(os.path.join(saved_path, project_name))
     print('best weights ', best_weights)
     return best_weights
 
@@ -563,6 +560,7 @@ def train(opt):
 
 
 def save_checkpoint_continual_learning(model, name, saved_path):
+    print('SAVING CHECKPOINT')
     if isinstance(model, CustomDataParallel):
         torch.save(model.module.model.state_dict(), os.path.join(saved_path, name))
     else:

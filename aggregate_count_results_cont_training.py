@@ -35,15 +35,28 @@ obj_list = params.obj_list
 compound_coef = 0
 input_sizes = [512, 640, 768, 896, 1024, 1280, 1280, 1536, 1536]
 
-all_best_orientation_durations = []
 
-all_best_fixed_percentages = []
 
 
 use_float16 = False
 model = EfficientDetBackbone(compound_coef=compound_coef, num_classes=len(obj_list),
                              ratios=eval(params.anchors_ratios), scales=eval(params.anchors_scales))
 
+
+
+
+def extract_csv_results(infile, car_thresh, person_thresh):
+    car_objects = []
+    person_objects = []
+    df = pd.read_csv(infile, names=['left', 'top', 'right', 'bottom', 'class', 'confidence'])
+    for idx, row in df.iterrows():
+        if row['class'] == 'car':
+            if float(row['confidence']) >= car_thresh:
+                car_objects.append([float(row['left']), float(row['top']), float(row['right']), float(row['bottom'])])
+        if row['class'] == 'person':
+            if float(row['confidence']) >= person_thresh:
+                person_objects.append([float(row['left']), float(row['top']), float(row['right']), float(row['bottom'])])
+    return car_objects, person_objects
 
 
 def run_inference(orientation_to_file,  model, gpu, threshold=0.05):
@@ -97,7 +110,6 @@ def run_inference(orientation_to_file,  model, gpu, threshold=0.05):
             if len(scores) == 0:
                 orientation_to_car_count[o] = 0
                 orientation_to_person_count[o] = 0
-                f_results.write(f'{frame},{orientation},{car_count},{people_count}\n')
                 continue
             for i in range(0,len(scores)):
                 # Class id 0 is car, 1 is person
@@ -132,6 +144,42 @@ def create_annotations(f, image_file, orientation_df, orientation, object_type, 
         annotation_id += 1
     return annotation_id
 
+
+def generate_neighboring_orientations(current_orientation):
+    items = current_orientation.split('-')
+    pan = int(items[0])
+    zoom = int(items[-1])
+    if pan == 0:
+        left_horz = 330
+    else:
+        left_horz = int(items[0]) - 30
+    if pan == 330:
+        right_horz = 0
+    else:
+        right_horz = int(items[0]) + 30
+
+    if len(items) == 4:
+        tilt = int(items[2]) * -1
+    else:
+        tilt = int(items[1])
+    top_tilt = tilt + 15
+    bottom_tilt = tilt - 15
+
+    if tilt == 30:
+        return [ f'{left_horz}-{tilt}-{zoom}', 
+                 f'{right_horz}-{tilt}-{zoom}', 
+                 current_orientation, 
+                 f'{pan}-{bottom_tilt}-{zoom}' ]
+    elif tilt == -30:
+        return [ f'{left_horz}-{tilt}-{zoom}', 
+                 f'{right_horz}-{tilt}-{zoom}', 
+                 current_orientation, 
+                 f'{pan}-{top_tilt}-{zoom}']
+    return [ f'{left_horz}-{tilt}-{zoom}', 
+             f'{right_horz}-{tilt}-{zoom}', 
+             current_orientation, 
+             f'{pan}-{top_tilt}-{zoom}', 
+             f'{pan}-{bottom_tilt}-{zoom}' ]
 
 
 
@@ -210,20 +258,31 @@ def main():
     ap.add_argument('frame_limit', type=int, help='Ending frame num ')
 
     ap.add_argument('actual', help='CSV with ground truth couns')
-    ap.add_argument('modeltype', help='Model variant (e.g., yolov4, faster-rcnn, ssd-voc, tiny-yolov4)')
 
     ap.add_argument('objecttype', help='object type')
+
+    ap.add_argument('weights', help='weights file')
+    ap.add_argument('project', help='some unique name for this experiment')
 
     ap.add_argument('--device', type=int, default=-1)
     args = ap.parse_args()
     object_type = args.objecttype 
-    model_type = args.modeltype
+    weights_path = args.weights
 
+    model.load_state_dict(torch.load(weights_path, map_location=torch.device('cpu')))
+    model.requires_grad_(False)
+    model.eval()
     gpu = args.device
     use_cuda = gpu >= 0
-    model_to_weights_path = {}
-    model_to_weights_path['yolov4'] = 'logs/madeye-yolov4-both-1-7920/efficientdet-d0_97_20500.pth'
-    model_to_weights_path['faster-rcnn'] = 'logs/madeye-faster-rcnn-both-1-7920/efficientdet-d0_141_20800.pth'
+
+
+    data_path = 'continual-learning/datasets/'
+    saved_path = 'continual-learning/weights/'
+
+    # Remove old weights 
+    if os.path.exists(saved_path):
+        shutil.rmtree(saved_path)
+    os.makedirs(saved_path, exist_ok=True)
 
     if use_cuda:
         model.cuda(gpu)
@@ -264,11 +323,7 @@ def main():
     current_accuracies = []
     all_accuracies = []
 
-    last_best_orientation = None
-    current_best_duration = 0
-    best_orientation_durations = []
     # TODO: Add count since last best fixed orientation seen. If count exceeds thresh, visit it
-    time_since_best_fixed_seen = 0
     orientation_to_latest_count = {}
 
     best_fixed_frames = 0
@@ -301,18 +356,9 @@ def main():
 
         if result_idx != prev_result_idx:
             print('RESETTING')
-            if current_best_duration > 0:
-                best_orientation_durations.append(current_best_duration)
 
-            if len(best_orientation_durations) > 0:
-                all_best_orientation_durations.extend(best_orientation_durations)
-            if total_frames > 0:
-                all_best_fixed_percentages.append(best_fixed_frames / total_frames)
             best_fixed_frames = 0
             total_frames = 0
-            best_orientation_durations.clear()
-            current_best_duration = 0
-            last_best_orientation = None
 
             prev_result_idx = result_idx
             if len(current_accuracies) > 0:
@@ -329,12 +375,8 @@ def main():
  
             orientation_to_latest_count.clear()
             orientation_to_count = {}
-            time_since_best_fixed_seen = 0
-            frames_encountered = 0
             # Get best fixed orientation
             for f in range(sub_frame_begin, sub_frame_limit+1):
-#                if frames_encountered >= 4:
-#                    break
                 if f not in frame_to_actual_orientation_to_count:
                     continue
                 elif len(orientation_to_latest_count) == 0:
@@ -345,7 +387,6 @@ def main():
                         orientation_to_count[o] = 0
                     orientation_to_count[o] += frame_to_actual_orientation_to_count[f][o]
 
-                frames_encountered += 1
             max_count = 0
             for o in orientation_to_count:
                 if orientation_to_count[o] > max_count:
@@ -363,60 +404,64 @@ def main():
                         orientation_to_historical_frames[o] = []
                     orientation_to_historical_frames[o].append( f)
 
-        if current_frame not in frame_to_actual_orientation_to_count:
+        if current_frame % SKIP != 0:
             continue
+
+        if current_frame < sub_frame_begin + int(0.3*(sub_frame_limit - sub_frame_begin)):
+            if current_frame % SKIP  == 0:
+                # Add training set to historical data
+                neighboring_orientations = generate_neighboring_orientations(best_fixed_orientation)
+                # Iterate through neighboring orientations to get results
+                for no in neighboring_orientations:
+                    if no not in orientation_to_historical_frames:
+                        orientation_to_historical_frames[no] = []
+                    orientation_to_historical_frames[no].append(current_frame)
+            continue
+
         print()
         print('Frame ', current_frame)
 
         print('best fixed orientation ', best_fixed_orientation)
-        print('MODEL COUNT')
-
-
-        print('LATEST COUNT')
-        print(orientation_to_latest_count)
-
-        print('ACTUAL COUNT')
-        print(frame_to_actual_orientation_to_count[current_frame])
 
         assert best_fixed_orientation is not None
-        max_orientation = None
-        max_count = -1
-        for o in frame_to_actual_orientation_to_count[current_frame]:
-            if frame_to_actual_orientation_to_count[current_frame][o] > max_count:
-                max_count = frame_to_actual_orientation_to_count[current_frame][o] 
-                max_orientation = o
-        if last_best_orientation is not None and frame_to_actual_orientation_to_count[current_frame][max_orientation] == frame_to_actual_orientation_to_count[current_frame][last_best_orientation]:
-            max_orientation = last_best_orientation
 
 
-        if last_best_orientation is None:
-            current_best_duration += 1
-        elif max_orientation == last_best_orientation or frame_to_actual_orientation_to_count[current_frame][last_best_orientation] == frame_to_actual_orientation_to_count[current_frame][max_orientation]:
-            current_best_duration += 1
-        else:
-            best_orientation_durations.append(current_best_duration) 
-            current_best_duration = 1
-             
-        last_best_orientation = max_orientation
+        actual_orientation_to_count = {}
+        neighboring_orientations = generate_neighboring_orientations(best_fixed_orientation)
+        # Iterate through neighboring orientations to get results
+        for no in neighboring_orientations:
+            neighbor_result_orientation_dir = os.path.join(args.inference, no)
+            actual_total_cars_list, actual_total_people_list = extract_csv_results(os.path.join(neighbor_result_orientation_dir, f'frame{current_frame}.csv'), CAR_CONFIDENCE_THRESH, PERSON_CONFIDENCE_THRESH)
+            if object_type == 'car':
+                actual_orientation_to_count[no] = len(actual_total_cars_list)
+            elif object_type == 'person':
+                actual_orientation_to_count[no] = len(actual_total_people_list)
+
+
+
+
 
         # **** AGGREGATION CODE HERE *****
         best_current_orientations = []
-        orientation_to_actual_ranking = rank_orientations(frame_to_actual_orientation_to_count[current_frame])
+        orientation_to_actual_ranking = rank_orientations(actual_orientation_to_count)
         current_model_orientation_to_count = {}
 
+        print('ACTUAL COUNT')
+        print(actual_orientation_to_count)
         orientation_to_file = {}
-        orientations_to_run_on = []
         for o in orientation_to_actual_ranking:
             orientation_to_file[o] = os.path.join(args.rectlinear, o, f'frame{current_frame}.jpg')
+        # Run inference
         orientation_to_car_count, orientation_to_person_count = run_inference(orientation_to_file,  model, args.device)
 
 
-
-
+        print('MODEL COUNT')
         if object_type == 'car':
             orientation_to_model_ranking = rank_orientations(orientation_to_car_count)
+            print(orientation_to_car_count)
         elif object_type == 'person':
             orientation_to_model_ranking = rank_orientations(orientation_to_person_count)
+            print(orientation_to_person_count)
         orientation_to_latest_ranking = rank_orientations(orientation_to_latest_count)
 
 
@@ -424,8 +469,8 @@ def main():
         # Aggregate ranks
         predicted_orientation_to_ranking = {}
         for o in orientation_to_actual_ranking:
-            predicted_orientation_to_ranking[o] = round( ( orientation_to_model_ranking[o] + orientation_to_latest_ranking[o] ) / 2)
-#            predicted_orientation_to_ranking[o] = orientation_to_model_ranking[o]
+#            predicted_orientation_to_ranking[o] = round( ( orientation_to_model_ranking[o] + orientation_to_latest_ranking[o] ) / 2)
+            predicted_orientation_to_ranking[o] = orientation_to_model_ranking[o]
 
         sorted_dict = {k: v for k, v in sorted(predicted_orientation_to_ranking.items(), key=lambda item: item[1] )}
         for o in sorted_dict:
@@ -437,14 +482,12 @@ def main():
                 break
 
 
-        if best_fixed_orientation not in frame_to_actual_orientation_to_count[current_frame]:
-            continue
 
         best_current_orientation = best_current_orientations[0]
 
         print('Best orientations ', best_current_orientations)
 
-        orientation_to_latest_count[best_current_orientation] = frame_to_actual_orientation_to_count[current_frame][best_current_orientation]
+        orientation_to_latest_count[best_current_orientation] = actual_orientation_to_count[best_current_orientation]
         # Add chosen image to potential training data
         if o not in orientation_to_training_frames:
             orientation_to_training_frames[o] = []
@@ -452,10 +495,13 @@ def main():
 
 
 
-
         # Compute stats
-        current_count = frame_to_actual_orientation_to_count[current_frame][best_current_orientation]
-        fixed_count = frame_to_actual_orientation_to_count[current_frame][best_fixed_orientation] 
+        max_count = 0
+        for o in actual_orientation_to_count:
+            if actual_orientation_to_count[o] > max_count:
+                max_count = actual_orientation_to_count[o]
+        current_count = actual_orientation_to_count[best_current_orientation]
+        fixed_count = actual_orientation_to_count[best_fixed_orientation] 
         fixed_rank = orientation_to_actual_ranking[best_fixed_orientation]
         current_rank = orientation_to_actual_ranking[best_current_orientation]
 
@@ -484,21 +530,18 @@ def main():
             best_fixed_frames += 1
         total_frames += 1
 
-        data_path = 'continual-learning/datasets/'
-        saved_path = 'continual-learning/weights/'
-        project_name = f'{model_type}'
-       
-        # Remove stuff from prior retraining period 
-        shutil.rmtree(os.path.join(saved_path, project_name))
-        os.makedirs(os.path.join(saved_path, project_name), exist_ok=True)
-
-        params.train_set  = 'train'
-        # Continual learnin
-
-
         if current_frame % 60 == 0:
 
-      
+           
+            # Remove stuff from prior retraining period 
+            if os.path.exists(os.path.join(data_path, args.project)):
+                shutil.rmtree(os.path.join(data_path, args.project))
+            os.makedirs(os.path.join(saved_path, args.project), exist_ok=True)
+            os.makedirs(os.path.join(data_path, args.project), exist_ok=True)
+
+            params.train_set  = 'train'
+            # Continual learnin
+
             orientation_to_val_frames = {} 
             len_of_retraining_set = 0 
             len_of_val_set = 0
@@ -508,7 +551,7 @@ def main():
                 len_of_retraining_set += len(orientation_to_training_frames[o])
     
             # Construct retraining set        
-            num_retraining_images = 30
+            num_retraining_images = 35
             while len_of_retraining_set < num_retraining_images:
                 o, _ = random.choice(list(orientation_to_historical_frames.items()))
                 new_frame = random.choice(orientation_to_historical_frames[o])
@@ -517,7 +560,7 @@ def main():
                     orientation_to_training_frames[o] = []
                 orientation_to_training_frames[o].append(new_frame)
     
-            num_val_images = 7
+            num_val_images = 10
             while len_of_val_set < num_val_images:
                 o, _ = random.choice(list(orientation_to_historical_frames.items()))
                 new_frame = random.choice(orientation_to_historical_frames[o])
@@ -528,13 +571,13 @@ def main():
     
                 orientation_to_val_frames[o].append(new_frame)
             # Train set
-            generate_dataset(args.inference, args.rectlinear, current_frame, orientation_to_training_frames, 'train', saved_path, project_name)
+            generate_dataset(args.inference, args.rectlinear, current_frame, orientation_to_training_frames, 'train', saved_path, args.project)
     #        # Val set
-            generate_dataset(args.inference, args.rectlinear, current_frame, orientation_to_val_frames, 'val', saved_path, project_name)
+            generate_dataset(args.inference, args.rectlinear, current_frame, orientation_to_val_frames, 'val', saved_path, args.project)
             
-            model_to_weights_path[model_type] = train.continual_train(params, model_type, model_to_weights_path[model_type], data_path, saved_path, project_name, num_epochs=10)
-            print('Saved weights ', model_to_weights_path[model_type])
-            model.load_state_dict(torch.load(model_to_weights_path[model_type], map_location=torch.device('cpu')))
+            weights_path = train.continual_train(params, args.project, weights_path, data_path, saved_path, args.project, num_epochs=20)
+            print('Saved weights ', weights_path)
+            model.load_state_dict(torch.load(weights_path, map_location=torch.device('cpu')))
             model.requires_grad_(False)
             orientation_to_training_frames.clear()
     if len(current_accuracies) == 0:
