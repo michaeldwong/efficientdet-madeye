@@ -1,5 +1,6 @@
 
 
+
 import pandas as pd
 import numpy as np 
 import cv2
@@ -18,7 +19,7 @@ import torch
 import yaml
 
 import train
-from backbone import EfficientDetBackbone
+from backbone import EfficientNetCounter
 from efficientdet.utils import BBoxTransform, ClipBoxes
 from utils.utils import preprocess, invert_affine, postprocess, boolean_string
 
@@ -39,8 +40,9 @@ input_sizes = [512, 640, 768, 896, 1024, 1280, 1280, 1536, 1536]
 
 
 use_float16 = False
-model = EfficientDetBackbone(compound_coef=compound_coef, num_classes=len(obj_list),
-                             ratios=eval(params.anchors_ratios), scales=eval(params.anchors_scales))
+
+model = EfficientNetCounter(compound_coef=compound_coef, num_classes=len(obj_list),
+                             ratios=eval(params['anchors_ratios']), scales=eval(params['anchors_scales']))
 
 
 
@@ -59,7 +61,7 @@ def extract_csv_results(infile, car_thresh, person_thresh):
     return car_objects, person_objects
 
 
-def run_inference(orientation_to_file,  model, gpu, threshold=0.05):
+def run_inference(orientation_to_file,  model, gpu):
 
     use_cuda = gpu >= 0
     regressBoxes = BBoxTransform()
@@ -82,42 +84,12 @@ def run_inference(orientation_to_file,  model, gpu, threshold=0.05):
                     x = x.float()
             else:
                 x = x.float()
-
-            people_count = 0
-            car_count = 0
             x = x.unsqueeze(0).permute(0, 3, 1, 2)
-            features, regression, classification, anchors = model(x)
 
-            preds = postprocess(x,
-                                anchors, regression, classification,
-                                regressBoxes, clipBoxes,
-                                threshold, nms_threshold)
-            if not preds:
-                orientation_to_car_count[o] = 0
-                orientation_to_person_count[o] = 0
-                continue
+            outputs = model(x)
 
-            preds = invert_affine(framed_metas, preds)[0]
-
-            scores = preds['scores']
-            class_ids = preds['class_ids']
-            rois = preds['rois']
-    #        print('Scores ', scores)
-    #        print("Class ids ", class_ids)
-    #        print('ROIs ', rois)
-            idx = 0
-            if len(scores) == 0:
-                orientation_to_car_count[o] = 0
-                orientation_to_person_count[o] = 0
-                continue
-            for i in range(0,len(scores)):
-                # Class id 0 is car, 1 is person
-                if scores[i] >= 0.7  and class_ids[i] == 0 :
-                    car_count += 1
-                elif scores[i] >= 0.5 and class_ids[i] == 1:
-                    people_count += 1
-            orientation_to_car_count[o] = car_count
-            orientation_to_person_count[o] = people_count
+            orientation_to_car_count[o] = outputs[0]
+            orientation_to_person_count[o] = outputs[1]
     return orientation_to_car_count, orientation_to_person_count
 
 
@@ -184,53 +156,17 @@ def generate_neighboring_orientations(current_orientation):
 
 
 # set_type is 'train' or 'val'
-def generate_dataset(inference_dir, rectlinear_dir, current_frame, orientation_to_frames, set_type, saved_path, project_name):
-    json_dict = {
-        "info": {
-            "description": "","url": "","version": "1.0","year": 2017,"contributor": "","date_created": "2017/09/01"
-        },
-        "licenses": [
-                {"id": 1, "name": "None", "url": "None"}
-        ],
-        "images": [
-
-        ],
-        "annotations": [
-
-        ],
-        "categories": [
-            {"id": 1, "name": "car", "supercategory": "None"},
-            {"id": 2, "name": "person", "supercategory": "None"},
-        ],
-    }
-
-    image_id = 0
-    annotation_id = 0
-    image_outdir = f'continual-learning/datasets/{project_name}/{set_type}'
-    annotations_outdir = f'continual-learning/datasets/{project_name}/annotations'
-    os.makedirs(annotations_outdir, exist_ok=True)
-    os.makedirs(image_outdir, exist_ok=True)
-
-    print('generating dataset')
-    print(orientation_to_frames)
-    for o in orientation_to_frames:
-        frames = orientation_to_frames[o]
-        result_orientation_dir = os.path.join(inference_dir, o)
-        for f in frames:
-            inference_file = os.path.join(result_orientation_dir, f'frame{f}.csv')
-            if os.path.getsize(inference_file) > 0:
-                orientation_df = pd.read_csv(inference_file)
-                orientation_df.columns = ['left', 'top', 'right', 'bottom', 'class', 'confidence']
-                orig_image_file = os.path.join(rectlinear_dir, o, f'frame{current_frame}.jpg')
-                image_file = f'{o}-frame{current_frame}.jpg'
-                dest = f'{image_outdir}/{image_file}'
-                shutil.copy(orig_image_file, dest)
-                json_dict['images'].append({"id": image_id, "file_name": image_file, "width": 1280, "height": 720, "date_captured": "", "license": 1, "coco_url": "", "flickr_url": ""})
-                annotation_id = create_annotations(f, image_file, orientation_df, o, 'both', json_dict, image_id, annotation_id)
-            image_id += 1
-
-    with open(os.path.join(annotations_outdir , f'instances_{set_type}.json'), 'w') as f_out:
-        json.dump(json_dict, f_out)
+def generate_dataset(inference_dir, rectlinear_dir, current_frame, orientation_to_frames, train_file):
+    with open(, 'w') as f:
+        for o in orientation_to_frames:
+            frames = orientation_to_frames[o]
+            result_orientation_dir = os.path.join(inference_dir, o)
+            for f in frames:
+                inference_file = os.path.join(result_orientation_dir, f'frame{f}.csv')
+                rectlinear_file = os.path.join(rectlinear_dir, f'frame{f}.csv')
+                if os.path.getsize(inference_file) > 0:
+                    actual_total_cars_list, actual_total_people_list = extract_csv_results(inference_file, CAR_CONFIDENCE_THRESH, PERSON_CONFIDENCE_THRESH)
+                    f.write(
 
 def rank_orientations(orientation_to_count):
     sorted_dict = {k: v for k, v in sorted(orientation_to_count.items(), key=lambda item: item[1] * -1)}
@@ -273,8 +209,7 @@ def main():
     use_cuda = gpu >= 0
 
 
-    data_path = 'continual-learning/datasets/'
-    saved_path = 'continual-learning/weights/'
+    saved_path = 'counter-continual-learning/weights/'
 
     # Remove old weights 
     if os.path.exists(saved_path):
@@ -603,10 +538,7 @@ def main():
 
                 print('Training ', orientation_to_training_frames) 
                 # Remove stuff from prior retraining period 
-                if os.path.exists(os.path.join(data_path, args.project)):
-                    shutil.rmtree(os.path.join(data_path, args.project))
                 os.makedirs(os.path.join(saved_path, args.project), exist_ok=True)
-                os.makedirs(os.path.join(data_path, args.project), exist_ok=True)
 
                 params.train_set  = 'train'
                 # Continual learnin
@@ -643,11 +575,14 @@ def main():
         
                     orientation_to_val_frames[o].append(new_frame)
                 # Train set
-                generate_dataset(args.inference, args.rectlinear, current_frame, orientation_to_training_frames, 'train', saved_path, args.project)
+                train_file = f'/tmp/counter_train_{os.getpid()}.csv'
+
+                val_file = f'/tmp/counter_val_{os.getpid()}.csv'
+                generate_dataset(inference_dir, rectlinear_dir, current_frame, orientation_to_frames, train_file):
         #        # Val set
-                generate_dataset(args.inference, args.rectlinear, current_frame, orientation_to_val_frames, 'val', saved_path, args.project)
-                
-                weights_path = train.continual_train(params,  weights_path, data_path, saved_path, args.project, num_epochs=10)
+
+                generate_dataset(inference_dir, rectlinear_dir, current_frame, orientation_to_val_frames, val_file):
+                weights_path = train_efficientnet.continual_train(params, train_file, val_file, weights_path,    saved_path, params,  num_epochs=10)
                 print('Saved weights ', weights_path)
                 model.load_state_dict(torch.load(weights_path, map_location=torch.device('cpu')))
                 model.requires_grad_(False)

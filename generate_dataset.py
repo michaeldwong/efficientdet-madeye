@@ -9,6 +9,35 @@ import random
 
 CAR_CONFIDENCE_THRESH = 70.0
 PERSON_CONFIDENCE_THRESH = 50.0
+SKIP = 6
+
+def generate_all_orientations():
+    orientations = []
+    # r1 controls horizontal rotation. r1 = 0 means center point of 0.5
+    # r2 contorls vertical rotation. r2 = 0 is focused on the ground, r2 = 90 is straight
+    for r1 in range(0,360,30):
+        for r2 in  [ -30, -15, 0, 15, 30]:
+            for z in [1,2,3]:
+                orientations.append(f'{r1}-{r2}-{z}')
+    return orientations
+
+def generate_random_orientations():
+    orientations = []
+    # r1 controls horizontal rotation. r1 = 0 means center point of 0.5
+    # r2 contorls vertical rotation. r2 = 0 is focused on the ground, r2 = 90 is straight
+    z1_orientations = []
+    z2_orientations = []
+    z3_orientations = []
+    for r1 in range(0,360,30):
+        for r2 in  [ -30, -15, 0, 15, 30]:
+            z1_orientations.append(f'{r1}-{r2}-1')
+            z2_orientations.append(f'{r1}-{r2}-2')
+            z3_orientations.append(f'{r1}-{r2}-3')
+    orientations.extend(random.sample(z1_orientations, random.randint(10, 30)))
+    orientations.extend(random.sample(z2_orientations, random.randint(3, 10)))
+    orientations.extend(random.sample(z3_orientations, random.randint(3, 5)))
+    return orientations
+
 
 def generate_neighboring_orientations(current_orientation):
     items = current_orientation.split('-')
@@ -91,6 +120,7 @@ ap.add_argument('frame_limit', type=int, help='Ending frame num')
 ap.add_argument('objecttype', type=str, help='car or person')
 ap.add_argument('outdir',  type=str, help='Output directory for images')
 ap.add_argument('outfile',  type=str, help='Output json file')
+ap.add_argument('dataset_type',  type=str, help='\'train\' or \'validation\'')
 
 ap.add_argument('--ignore-begin', default=0, type=int, help='Beginnign frame num to ignore')  
 ap.add_argument('--ignore-limit', default=0, type=int, help='Ending frame num to ignore')  
@@ -175,7 +205,7 @@ with open(args.outfile, 'w') as f:
         sub_frame_limit = frame_bounds[result_idx][1]
         orientations = frame_limit_to_orientation[sub_frame_limit][:1]
 
-        if current_frame % 6 != 0:
+        if current_frame % SKIP != 0:
             current_frame += 1
             continue
         if current_frame >= args.ignore_begin and current_frame <= args.ignore_limit:
@@ -183,16 +213,23 @@ with open(args.outfile, 'w') as f:
             continue
         #######
         # For training on first 20% of frames
-        total_frames = int((frame_bounds[result_idx][1] - frame_bounds[result_idx][0]) * 0.6)
+        total_frames = int((frame_bounds[result_idx][1] - frame_bounds[result_idx][0]) * 0.3)
 
-        val_upper_bound = int((frame_bounds[result_idx][1] - frame_bounds[result_idx][0]) * 0.7)
+        val_upper_bound = int((frame_bounds[result_idx][1] - frame_bounds[result_idx][0]) * 0.4)
+        if args.dataset_type == 'validation':
+            if current_frame <=  frame_bounds[result_idx][0] + total_frames or current_frame >=  frame_bounds[result_idx][0] + val_upper_bound:
+                current_frame += 1
+                continue
 
-#        if current_frame <=  frame_bounds[result_idx][0] + total_frames or current_frame >=  frame_bounds[result_idx][0] + val_upper_bound:
+        elif args.dataset_type == 'train':
+            if current_frame >= frame_bounds[result_idx][0] + total_frames:
+                current_frame += 1
+                continue
+
+#        if current_frame >= frame_bounds[result_idx][0] + total_frames:
 #            current_frame += 1
 #            continue
-        if current_frame >= frame_bounds[result_idx][0] + total_frames:
-            current_frame += 1
-            continue
+        
 
 
 
@@ -213,15 +250,14 @@ with open(args.outfile, 'w') as f:
 #        if int(orientations[0][:orientations[0].index('-')]) % 60 != 0:
 #            current_frame += 1
 #            continue
-        all_orientations = []
-        for current_orientation in orientations:
-            neighboring_orientations = generate_neighboring_orientations(current_orientation)
-            for no in neighboring_orientations:
-                if no not in all_orientations:
-                    all_orientations.append(no)
-        print('current orienttion ', current_orientation)
-        print('all orientations ', all_orientations)
-        for o in all_orientations:
+#        all_orientations = []
+#        for current_orientation in orientations:
+#            neighboring_orientations = generate_neighboring_orientations(current_orientation)
+#            for no in neighboring_orientations:
+#                if no not in all_orientations:
+#                    all_orientations.append(no)
+#        for o in all_orientations:
+        for o in generate_random_orientations():
             neighbor_result_orientation_dir = os.path.join(args.inference_dir, o)
             inference_file = os.path.join(neighbor_result_orientation_dir, f'frame{current_frame}.csv')
             if os.path.getsize(inference_file) > 0:

@@ -127,6 +127,8 @@ if __name__ == '__main__':
     model.requires_grad_(False)
     model.eval()
 
+    torch.save(model.backbone_net.state_dict(), os.path.join('weights', 'efficientnet-d0-counter.pth'))
+    exit()
     if use_cuda:
         model.cuda(gpu)
 
