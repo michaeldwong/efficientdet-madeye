@@ -80,7 +80,7 @@ class ModelWithLoss(nn.Module):
             cls_loss, reg_loss = self.criterion(classification, regression, anchors, annotations)
         return cls_loss, reg_loss
 
-def continual_train(params, model_type, weights_path, data_path, saved_path, project_name, num_epochs=10):
+def continual_train(params,  weights_path, data_path, saved_path, project_name, num_epochs=10):
 
     # Hardcoded options
     batch_size = 8
@@ -93,7 +93,7 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
     lr = 1e-4
     optim = 'adamw'
     es_patience = 0
-    save_interval = 10
+    save_interval = 100
   
     best_weights = weights_path
  
@@ -239,9 +239,6 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
                         'Step: {}. Epoch: {}/{}. Iteration: {}/{}. Cls loss: {:.5f}. Reg loss: {:.5f}. Total loss: {:.5f}'.format(
                             step, epoch, num_epochs, iter + 1, num_iter_per_epoch, cls_loss.item(),
                             reg_loss.item(), loss.item()))
-#                    writer.add_scalars('Loss', {'train': loss}, step)
-#                    writer.add_scalars('Regression_loss', {'train': reg_loss}, step)
-#                    writer.add_scalars('Classfication_loss', {'train': cls_loss}, step)
 
                     # log learning_rate
                     current_lr = optimizer.param_groups[0]['lr']
@@ -261,57 +258,55 @@ def continual_train(params, model_type, weights_path, data_path, saved_path, pro
             scheduler.step(np.mean(epoch_loss))
 
             # VAlidation testing
-            if epoch % val_interval == 0:
-                model.eval()
-                loss_regression_ls = []
-                loss_classification_ls = []
-                for iter, data in enumerate(val_generator):
-                    with torch.no_grad():
-                        imgs = data['img']
-                        annot = data['annot']
-
-                        if params.num_gpus == 1:
-                            imgs = imgs.cuda()
-                            annot = annot.cuda()
-
-                        cls_loss, reg_loss = model(imgs, annot, obj_list=params.obj_list)
-                        cls_loss = cls_loss.mean()
-                        reg_loss = reg_loss.mean()
-
-                        loss = cls_loss + reg_loss
-                        if loss == 0 or not torch.isfinite(loss):
-                            continue
-
-                        loss_classification_ls.append(cls_loss.item())
-                        loss_regression_ls.append(reg_loss.item())
-
-                cls_loss = np.mean(loss_classification_ls)
-                reg_loss = np.mean(loss_regression_ls)
-                loss = cls_loss + reg_loss
-
-                print(
-                    'Val. Epoch: {}/{}. Classification loss: {:1.5f}. Regression loss: {:1.5f}. Total loss: {:1.5f}'.format(
-                        epoch, num_epochs, cls_loss, reg_loss, loss))
-#                writer.add_scalars('Loss', {'val': loss}, step)
-#                writer.add_scalars('Regression_loss', {'val': reg_loss}, step)
-#                writer.add_scalars('Classfication_loss', {'val': cls_loss}, step)
-
-                if loss + es_min_delta < best_loss:
-                    best_loss = loss
-                    best_epoch = epoch
-
-                    save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_{epoch}.pth', os.path.join(saved_path, project_name))
-                    best_weights = f'continual-learning/weights/efficientdet-d{compound_coef}_min.pth'
-                model.train()
-
-                # Early stopping
-                if epoch - best_epoch > es_patience > 0:
-                    print('[Info] Stop training at epoch {}. The lowest loss achieved is {}'.format(epoch, best_loss))
-
-                    break
+#            if epoch % val_interval == 0:
+#                model.eval()
+#                loss_regression_ls = []
+#                loss_classification_ls = []
+#                for iter, data in enumerate(val_generator):
+#                    with torch.no_grad():
+#                        imgs = data['img']
+#                        annot = data['annot']
+#
+#                        if params.num_gpus == 1:
+#                            imgs = imgs.cuda()
+#                            annot = annot.cuda()
+#
+#                        cls_loss, reg_loss = model(imgs, annot, obj_list=params.obj_list)
+#                        cls_loss = cls_loss.mean()
+#                        reg_loss = reg_loss.mean()
+#
+#                        loss = cls_loss + reg_loss
+#                        if loss == 0 or not torch.isfinite(loss):
+#                            continue
+#
+#                        loss_classification_ls.append(cls_loss.item())
+#                        loss_regression_ls.append(reg_loss.item())
+#
+#                cls_loss = np.mean(loss_classification_ls)
+#                reg_loss = np.mean(loss_regression_ls)
+#                loss = cls_loss + reg_loss
+#
+#                print(
+#                    'Val. Epoch: {}/{}. Classification loss: {:1.5f}. Regression loss: {:1.5f}. Total loss: {:1.5f}'.format(
+#                        epoch, num_epochs, cls_loss, reg_loss, loss))
+#
+#                if loss + es_min_delta < best_loss:
+#                    best_loss = loss
+#                    best_epoch = epoch
+#
+#                    save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_{epoch}.pth', os.path.join(saved_path, project_name))
+#                    best_weights = f'continual-learning/weights/efficientdet-d{compound_coef}_min.pth'
+#                model.train()
+#
+#                # Early stopping
+#                if epoch - best_epoch > es_patience > 0:
+#                    print('[Info] Stop training at epoch {}. The lowest loss achieved is {}'.format(epoch, best_loss))
+#
+#                    break
     except KeyboardInterrupt:
         save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_{epoch}.pth', os.path.join(saved_path, project_name))
 
+    save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_{epoch}.pth', os.path.join(saved_path, project_name))
     if len(os.listdir(os.path.join(saved_path, project_name))) == 0:
         best_weights = weights_path
     else: 
@@ -560,7 +555,6 @@ def train(opt):
 
 
 def save_checkpoint_continual_learning(model, name, saved_path):
-    print('SAVING CHECKPOINT')
     if isinstance(model, CustomDataParallel):
         torch.save(model.module.model.state_dict(), os.path.join(saved_path, name))
     else:
