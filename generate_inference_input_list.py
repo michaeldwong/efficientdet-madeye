@@ -10,6 +10,22 @@ import random
 CAR_CONFIDENCE_THRESH = 70.0
 PERSON_CONFIDENCE_THRESH = 50.0
 
+
+
+
+def extract_csv_results(infile, car_thresh, person_thresh):
+    car_objects = []
+    person_objects = []
+    df = pd.read_csv(infile, names=['left', 'top', 'right', 'bottom', 'class', 'confidence'])
+    for idx, row in df.iterrows():
+        if row['class'] == 'car':
+            if float(row['confidence']) >= car_thresh:
+                car_objects.append([float(row['left']), float(row['top']), float(row['right']), float(row['bottom'])])
+        if row['class'] == 'person':
+            if float(row['confidence']) >= person_thresh:
+                person_objects.append([float(row['left']), float(row['top']), float(row['right']), float(row['bottom'])])
+    return car_objects, person_objects
+
 def generate_neighboring_orientations(current_orientation):
     items = current_orientation.split('-')
     pan = int(items[0])
@@ -60,6 +76,8 @@ def generate_neighboring_orientations(current_orientation):
              f'{pan}-{bottom_tilt}-{zoom}' ]
 
 ap = argparse.ArgumentParser()
+
+ap.add_argument('inference', help='Directory of inference results')
 ap.add_argument('rectlinear', help='Directory of raw frames')
 ap.add_argument('fixed_orientations_file', help='CSV with best fixed orientations')
 ap.add_argument('frame_begin', type=int, help='Beginning frame num')
@@ -145,6 +163,8 @@ with open(args.outfile, 'w') as f:
         print('all orientations ', all_orientations)
         for o in all_orientations:
             infile = os.path.join(args.rectlinear, o, f'frame{current_frame}.jpg')
-            f.write(f'{current_frame},{o},{infile}\n')
+
+            actual_total_cars_list, actual_total_people_list = extract_csv_results(os.path.join(args.inference, o, f'frame{current_frame}.csv'), CAR_CONFIDENCE_THRESH, PERSON_CONFIDENCE_THRESH)
+            f.write(f'{current_frame},{o},{infile},{len(actual_total_cars_list)},{len(actual_total_people_list)}\n')
         current_frame += 1
 

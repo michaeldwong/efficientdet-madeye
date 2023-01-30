@@ -8,8 +8,48 @@ from efficientdet.model import BiFPN, Regressor, Classifier, EfficientNet
 from efficientdet.utils import Anchors
 
 
+class DiffEfficientNetCounter(nn.Module):
+    # Weights path is for EfficientNetCounter that will be used for both current and prev CNNs
+    def __init__(self,  compound_coef=0, load_weights=False, **kwargs):
+        super(DiffEfficientNetCounter, self).__init__()
+
+        self.backbone_compound_coef = [0, 1, 2, 3, 4, 5, 6, 6, 7]
+        self.input_sizes = [512, 640, 768, 896, 1024, 1280, 1280, 1536, 1536]
+
+        self.backbone_net = EfficientNetCounter(self.backbone_compound_coef[compound_coef], load_weights)
+        self.prev_net = EfficientNetCounter(self.backbone_compound_coef[compound_coef], load_weights)
+
+
+
+        self.avg_pool = nn.AdaptiveMaxPool2d((2, 2))
+        # Add 2 for the prev counts
+        self.fc1 = nn.Linear(3776 + 2, 2)
+        self.leakyReLU = nn.LeakyReLU(0.2)
+
+    def forward(self, prev_image, current_image, prev_car_count, prev_person_count):
+
+        _, pp3, pp4, pp5 = self.prev_net.backbone_net(prev_image)
+        pp3_pooled = self.avg_pool(F.relu(pp3))
+        pp4_pooled = self.avg_pool(F.relu(pp4))
+        pp5_pooled = self.avg_pool(F.relu(pp5))
+        prev_feature_vec = torch.cat((pp3_pooled.flatten(), pp4_pooled.flatten(), pp5_pooled.flatten()))
+
+        _, cp3, cp4, cp5 = self.current_net.backbone_net(current_image)
+        cp3_pooled = self.avg_pool(F.relu(cp3))
+        cp4_pooled = self.avg_pool(F.relu(cp4))
+        cp5_pooled = self.avg_pool(F.relu(cp5))
+        current_feature_vec = torch.cat((cp3_pooled.flatten(), cp4_pooled.flatten(), cp5_pooled.flatten()))
+        feature_vec = torch.cat((prev_feature_vec, current_feature_vec))
+
+
+        t = torch.tensor([prev_count, prev_car_count])
+        x = torch.cat((feature_vec, t) )
+        x = self.leakyReLU(self.fc1(x))
+        return x
+
+
 class EfficientNetCounter(nn.Module):
-    def __init__(self, num_classes=80, compound_coef=0, load_weights=False, **kwargs):
+    def __init__(self, compound_coef=0, load_weights=False, **kwargs):
         super(EfficientNetCounter, self).__init__()
         self.compound_coef = compound_coef
 
@@ -37,32 +77,43 @@ class EfficientNetCounter(nn.Module):
 
         num_anchors = len(self.aspect_ratios) * self.num_scales
 
+        self.bifpn = nn.Sequential(
+            *[BiFPN(self.fpn_num_filters[self.compound_coef],
+                    conv_channel_coef[compound_coef],
+                    True if _ == 0 else False,
+                    attention=True if compound_coef < 6 else False,
+                    use_p8=compound_coef > 7)
+              for _ in range(self.fpn_cell_repeats[compound_coef])])
         self.backbone_net = EfficientNet(self.backbone_compound_coef[compound_coef], load_weights)
         self.avg_pool = nn.AdaptiveMaxPool2d((2, 2))
-        self.fc1 = nn.Linear(1888, 2)
-#        self.fc1 = nn.Linear(1888, 1)
+#        self.fc1 = nn.Linear(1888, 100)
+        self.fc1 = nn.Linear(1280, 2)
         # One output for cars, other for people
-        self.r1 = nn.LeakyReLU(0.2)
+        self.leakyReLU = nn.LeakyReLU(0.2)
 
     def forward(self, inputs):
-        max_size = inputs.shape[-1]
         _, p3, p4, p5 = self.backbone_net(inputs)
         features = (p3, p4, p5)
-        p3_pooled = self.avg_pool(F.relu(p3))
-        p4_pooled = self.avg_pool(F.relu(p4))
-        p5_pooled = self.avg_pool(F.relu(p5))
-        feature_vec = torch.cat((p3_pooled.flatten(), p4_pooled.flatten(), p5_pooled.flatten()))
 
-        x = self.r1(self.fc1(feature_vec))
-        return x
+
+
+        b0,b1,b2,b3,b4 = self.bifpn(features)
+
+        b0_pooled = self.avg_pool(F.relu(b0))
+        b1_pooled = self.avg_pool(F.relu(b1))
+        b2_pooled = self.avg_pool(F.relu(b2))
+        b3_pooled = self.avg_pool(F.relu(b3))
+        b4_pooled = self.avg_pool(F.relu(b4))
+
+        feature_vec = torch.cat((b0_pooled.flatten(), b1_pooled.flatten(), b2_pooled.flatten(), b3_pooled.flatten(), b4_pooled.flatten()))
+
+#        p3_pooled = self.avg_pool(F.relu(p3))
+#        p4_pooled = self.avg_pool(F.relu(p4))
+#        p5_pooled = self.avg_pool(F.relu(p5))
+#        feature_vec = torch.cat((p3_pooled.flatten(), p4_pooled.flatten(), p5_pooled.flatten()))
 #
-#    def init_backbone(self, path):
-#        state_dict = torch.load(path)
-#        try:
-#            ret = self.load_state_dict(state_dict, strict=False)
-#            print(ret)
-#        except RuntimeError as e:
-#            print('Ignoring ' + str(e) + '"')
+        x = self.leakyReLU(self.fc1(feature_vec))
+        return x
 
 class EfficientDetBackbone(nn.Module):
     def __init__(self, num_classes=80, compound_coef=0, load_weights=False, **kwargs):

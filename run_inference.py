@@ -127,7 +127,12 @@ if __name__ == '__main__':
     model.requires_grad_(False)
     model.eval()
 
-    torch.save(model.backbone_net.state_dict(), os.path.join('weights', 'efficientnet-d0-counter.pth'))
+    current_net = model.backbone_net
+    prev_net = model.backbone_net
+
+    torch.save(model.backbone_net.state_dict(), os.path.join('weights', 'efficientnet-d0-backbone.pth'))
+
+    torch.save(model.bifpn.state_dict(), os.path.join('weights', 'efficientnet-d0-bifpn.pth'))
     exit()
     if use_cuda:
         model.cuda(gpu)
