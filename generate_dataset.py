@@ -114,10 +114,10 @@ def create_annotations(f, image_file, orientation_df, orientation, object_type, 
 ap = argparse.ArgumentParser()
 ap.add_argument('rectlinear', help='Directory of raw frames')
 ap.add_argument('inference_dir', help='Directory of inference results (include model folder)')
-ap.add_argument('fixed_orientations_file', help='CSV with best fixed orientations')
+#ap.add_argument('fixed_orientations_file', help='CSV with best fixed orientations')
 ap.add_argument('frame_begin', type=int, help='Beginning frame num')
 ap.add_argument('frame_limit', type=int, help='Ending frame num')
-ap.add_argument('objecttype', type=str, help='car or person')
+#ap.add_argument('objecttype', type=str, help='car or person')
 ap.add_argument('outdir',  type=str, help='Output directory for images')
 ap.add_argument('outfile',  type=str, help='Output json file')
 ap.add_argument('dataset_type',  type=str, help='\'train\' or \'validation\'')
@@ -128,23 +128,23 @@ ap.add_argument("--per-orientation", action="store_true")
 args = ap.parse_args()
 
 
-object_type = args.objecttype
-
+#object_type = args.objecttype
+object_type = 'both'
 best_fixed_df = pd.read_csv(args.fixed_orientations_file)
 
-frame_limit_to_orientation = {}
-for idx, row in best_fixed_df.iterrows():
-    if (object_type == 'car' or object_type == 'both') and row['class'] == 'car':
-        if row['frame_limit'] not in frame_limit_to_orientation:
-            frame_limit_to_orientation[row['frame_limit']] = []  
-        if row['orientation'] not in frame_limit_to_orientation[row['frame_limit']]:
-            frame_limit_to_orientation[row['frame_limit']].append(row['orientation'])
-    elif (object_type == 'person' or object_type == 'both') and row['class'] == 'person':
-        if row['frame_limit'] not in frame_limit_to_orientation:
-            frame_limit_to_orientation[row['frame_limit']] = []
-        if row['orientation'] not in frame_limit_to_orientation[row['frame_limit']]:
-            frame_limit_to_orientation[row['frame_limit']].append( row['orientation'])
-
+#frame_limit_to_orientation = {}
+#for idx, row in best_fixed_df.iterrows():
+#    if (object_type == 'car' or object_type == 'both') and row['class'] == 'car':
+#        if row['frame_limit'] not in frame_limit_to_orientation:
+#            frame_limit_to_orientation[row['frame_limit']] = []  
+#        if row['orientation'] not in frame_limit_to_orientation[row['frame_limit']]:
+#            frame_limit_to_orientation[row['frame_limit']].append(row['orientation'])
+#    elif (object_type == 'person' or object_type == 'both') and row['class'] == 'person':
+#        if row['frame_limit'] not in frame_limit_to_orientation:
+#            frame_limit_to_orientation[row['frame_limit']] = []
+#        if row['orientation'] not in frame_limit_to_orientation[row['frame_limit']]:
+#            frame_limit_to_orientation[row['frame_limit']].append( row['orientation'])
+#
 current_frame = args.frame_begin
 frame_bounds = [(1,1161), (1162,1663), (1664,2823), (2824,3966), (3967, 4983), (4984, 6075), (6076, 7194),  (7195, 7920), (16939,18418)]
 current_frame = args.frame_begin
@@ -203,7 +203,8 @@ with open(args.outfile, 'w') as f:
             result_idx = 0 
         sub_frame_begin = frame_bounds[result_idx][0]
         sub_frame_limit = frame_bounds[result_idx][1]
-        orientations = frame_limit_to_orientation[sub_frame_limit][:1]
+        if current_frame < sub_frame_begin: 
+            current_frame = sub_frame_begin
 
         if current_frame % SKIP != 0:
             current_frame += 1
