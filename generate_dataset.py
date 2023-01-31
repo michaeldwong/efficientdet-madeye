@@ -130,7 +130,7 @@ args = ap.parse_args()
 
 #object_type = args.objecttype
 object_type = 'both'
-best_fixed_df = pd.read_csv(args.fixed_orientations_file)
+#best_fixed_df = pd.read_csv(args.fixed_orientations_file)
 
 #frame_limit_to_orientation = {}
 #for idx, row in best_fixed_df.iterrows():
