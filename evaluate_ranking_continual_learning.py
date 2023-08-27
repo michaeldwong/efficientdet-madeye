@@ -871,7 +871,6 @@ def evaluate_coco(  model, threshold=0.05):
                 gt_orientation_to_person_count[o] /= max_gt_person_count
                 gt_orientation_to_both_count[o] = gt_orientation_to_car_count[o] + gt_orientation_to_person_count[o]
 
-            current_frame += 1
 
 
             gt_orientation_to_car_rank = rank_orientations(gt_orientation_to_car_count)
