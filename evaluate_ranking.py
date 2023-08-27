@@ -26,7 +26,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument('inference', type=str, help='Inference dir')
 ap.add_argument('rectlinear', type=str, help='Rectlinear dir')
 
-ap.add_argument('frame_begin', type=int, help='Begin frame')
+ap.add_argument('first_frame', type=int, help='First frame in the frame boundary')
+ap.add_argument('frame_begin', type=int, help='Begin frame to start evaluation from')
 ap.add_argument('frame_limit', type=int, help='End frame')
 
 ap.add_argument('-p', '--project', type=str, default='coco', help='project file that contains parameters')
@@ -245,7 +246,7 @@ def evaluate_coco(  model, threshold=0.05):
     orientation_to_person_selected = {}
     orientation_to_car_selected = {}
 
-    base_orientations = best_fixed_orientations(args.frame_begin, args.frame_limit, args.inference, generate_orientations())
+    base_orientations = best_fixed_orientations(args.first_frame, args.frame_limit, args.inference, generate_orientations())
     print('base orientations ', base_orientations)
     for base_idx,current_orientation  in enumerate(base_orientations):
 
@@ -402,16 +403,15 @@ def evaluate_coco(  model, threshold=0.05):
                 continue
             print()
             print('Frame ', current_frame)
-            orientation_to_car_count = {}
 
-            orientation_to_both_count = {}
-            orientation_to_person_count = {}
-            print('Num neighbors ', len(neighboring_orientations))
+
+            thresh_to_orientation_to_car_count = {}
+            thresh_to_orientation_to_both_count = {}
+            thresh_to_orientation_to_person_count = {}
+
             max_gt_car_count = 0
             max_gt_person_count = 0
 
-            max_car_count = 0
-            max_person_count = 0
             for no in neighboring_orientations:
 
                 inference_file = os.path.join(args.inference, no, f'frame{current_frame}.csv')
@@ -442,8 +442,6 @@ def evaluate_coco(  model, threshold=0.05):
                 else:
                     x = x.float()
 
-                person_count = 0
-                car_count = 0
                 x = x.unsqueeze(0).permute(0, 3, 1, 2)
                 features, regression, classification, anchors = model(x)
 
@@ -459,51 +457,102 @@ def evaluate_coco(  model, threshold=0.05):
                 scores = preds['scores']
                 class_ids = preds['class_ids']
                 rois = preds['rois']
-                idx = 0
-                for i in range(0,len(scores)):
-                    # For COCO Class id 2 is car, 0 is person
-    #                        if scores[i] >= 0.3  and class_ids[i] == 2 :
-    #                            car_count += 1
-    #                        elif scores[i] >= 0.2 and class_ids[i] == 0:
-    #                            people_count += 1
-                    # Class id 0 is car, 1 is person
-                    if scores[i] >= 0.2  and class_ids[i] == 0 :
-                        car_count += 1
-                    elif scores[i] >= 0.1 and class_ids[i] == 1:
-                        person_count += 1
-                orientation_to_car_count[no] = car_count
-                orientation_to_person_count[no] = person_count
-                if car_count > max_car_count:
-                    max_car_count = car_count
-                if person_count > max_person_count:
-                    max_person_count = person_count
-                print(no , ' : cars -> ', car_count, ' ppl  -> ', person_count)
 
+                for thresh in [ 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9]:
+                    person_count = 0
+                    car_count = 0
+                    for i in range(0,len(scores)):
+                        # For COCO Class id 2 is car, 0 is person
+        #                        if scores[i] >= 0.3  and class_ids[i] == 2 :
+        #                            car_count += 1
+        #                        elif scores[i] >= 0.2 and class_ids[i] == 0:
+        #                            people_count += 1
+                        # Class id 0 is car, 1 is person
+                        if scores[i] >= thresh  and class_ids[i] == 0 :
+                            car_count += 1
+                        elif scores[i] >= thresh and class_ids[i] == 1:
+                            person_count += 1
+                    if thresh not in thresh_to_orientation_to_car_count:
+                        thresh_to_orientation_to_car_count[thresh] = {}
+                    thresh_to_orientation_to_car_count[thresh][no] = car_count
+                    if thresh not in thresh_to_orientation_to_person_count:
+                        thresh_to_orientation_to_person_count[thresh] = {}
+                    thresh_to_orientation_to_person_count[thresh][no] = person_count
 
-            if max_car_count == 0:
-                max_car_count = 1
-            if max_person_count == 0:
-                max_person_count = 1
             if max_gt_car_count == 0:
                 max_gt_car_count = 1
             if max_gt_person_count == 0:
                 max_gt_person_count = 1
-
             for o in neighboring_orientations:
-                orientation_to_both_count[o] = (orientation_to_car_count[o] / max_car_count) + (orientation_to_person_count[o] / max_person_count)
 
                 gt_orientation_to_car_count[o] /= max_gt_car_count
                 gt_orientation_to_person_count[o] /= max_gt_person_count
                 gt_orientation_to_both_count[o] = gt_orientation_to_car_count[o] + gt_orientation_to_person_count[o]
 
             current_frame += 1
-            orientation_to_car_rank = rank_orientations(orientation_to_car_count)
-            orientation_to_person_rank = rank_orientations(orientation_to_person_count)
-            orientation_to_both_rank = rank_orientations(orientation_to_both_count)
+
 
             gt_orientation_to_car_rank = rank_orientations(gt_orientation_to_car_count)
             gt_orientation_to_person_rank = rank_orientations(gt_orientation_to_person_count)
             gt_orientation_to_both_rank = rank_orientations(gt_orientation_to_both_count)
+
+            best_car_thresh = 0.3
+            best_person_thresh = 0.1
+            best_car_rank = 10
+            best_person_rank = 10
+            for thresh in [ 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9]:
+                tmp_orientation_to_car_count = thresh_to_orientation_to_car_count[thresh]
+                tmp_orientation_to_person_count = thresh_to_orientation_to_person_count[thresh]
+                tmp_orientation_to_car_rank = rank_orientations(tmp_orientation_to_car_count)
+                tmp_orientation_to_person_rank = rank_orientations(tmp_orientation_to_person_count)
+                best_car_orientation  = neighboring_orientations[0]
+                best_person_orientation  = neighboring_orientations[0]
+                for no in neighboring_orientations:
+                    if tmp_orientation_to_car_rank[no] == 1 and gt_orientation_to_car_rank[no] < best_car_rank:
+                        best_car_thresh = thresh
+                        best_car_rank = gt_orientation_to_car_rank[no]
+                    elif tmp_orientation_to_person_rank[no] == 1 and gt_orientation_to_person_rank[no] < best_person_rank:
+                        best_person_thresh = thresh
+                        best_person_rank = gt_orientation_to_person_rank[no]
+
+
+            orientation_to_car_count = thresh_to_orientation_to_car_count[best_car_thresh]
+            orientation_to_person_count = thresh_to_orientation_to_person_count[best_person_thresh]
+            print('car thresh = ', best_car_thresh)
+            print('person thresh ', best_person_thresh)
+            max_car_count = 0
+            max_person_count = 0
+            for no in neighboring_orientations:
+                car_count = orientation_to_car_count[no]
+                person_count = orientation_to_person_count[no]
+                if car_count > max_car_count:
+                    max_car_count = car_count
+                if person_count > max_person_count:
+                    max_person_count = person_count
+                print(no , ' : cars -> ', car_count, ' ppl  -> ', person_count)
+            if max_car_count == 0:
+                max_car_count = 1
+            if max_person_count == 0:
+                max_person_count = 1
+
+            orientation_to_both_count = {}
+            for o in neighboring_orientations:
+                orientation_to_both_count[o] = (orientation_to_car_count[o] / max_car_count) + (orientation_to_person_count[o] / max_person_count)
+
+            orientation_to_car_rank = rank_orientations(orientation_to_car_count)
+            orientation_to_person_rank = rank_orientations(orientation_to_person_count)
+            orientation_to_both_rank = rank_orientations(orientation_to_both_count)
+
+
+
+
+
+
+
+
+
+
+
 
             correct = 0
             car_ranks = []
@@ -542,8 +591,8 @@ def evaluate_coco(  model, threshold=0.05):
                         gt_orientation_to_car_selected[o] += 1
 
 
-            current_car_rank = sum(car_ranks) / len(car_ranks)
-
+#            current_car_rank = sum(car_ranks) / len(car_ranks)
+            current_car_rank = min(car_ranks)
 
 
             for o in orientation_to_person_count:
@@ -578,7 +627,9 @@ def evaluate_coco(  model, threshold=0.05):
                 print('Fixed car rank ', fixed_car_rank)
                 print('Car rank ', current_car_rank)
                 overall_car_ranks.append(current_car_rank)
-            current_person_rank = sum(person_ranks) / len(person_ranks)
+
+            current_person_rank =  min(person_ranks)
+#            current_person_rank = sum(person_ranks) / len(person_ranks)
             if max_gt_person_count > 0:
                 fixed_person_rank = gt_orientation_to_person_rank[best_fixed_person_orientation]
                 overall_fixed_person_ranks.append(fixed_person_rank)
