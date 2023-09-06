@@ -49,6 +49,7 @@ ap.add_argument('-p', '--project', type=str, default='coco', help='project file 
 ap.add_argument('-c', '--compound_coef', type=int, default=0, help='coefficients of efficientdet')
 ap.add_argument('-w', '--weights', type=str, default=None, help='/path/to/weights')
 
+ap.add_argument('-o', '--outfile', type=str, default=None, help='/path/to/file')
 
 ap.add_argument('--nms_threshold', type=float, default=0.5, help='nms threshold, don\'t change it if not for testing purposes')
 ap.add_argument('--cuda', type=boolean_string, default=True)
@@ -83,9 +84,8 @@ input_sizes = [512, 640, 768, 896, 1024, 1280, 1280, 1536, 1536]
 
 
 
-
-
-
+threshes = [ 0.0, 0.2, 0.4 ]
+#threshes = [ 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9]
 
 class ModelWithLoss(nn.Module):
     def __init__(self, model, debug=False):
@@ -229,16 +229,20 @@ def generate_dataset(inference_dir, rectlinear_dir,  current_frame, orientation_
             if os.path.getsize(inference_file) > 0:
                 orientation_df = pd.read_csv(inference_file)
                 orientation_df.columns = ['left', 'top', 'right', 'bottom', 'class', 'confidence']
-                orig_image_file = os.path.join(rectlinear_dir, o, f'frame{current_frame}.jpg')
-                image_file = f'{o}-frame{current_frame}.jpg'
+                orig_image_file = os.path.join(rectlinear_dir, o, f'frame{f}.jpg')
+                if not os.path.exists(orig_image_file):
+                    print('DNE ', orig_image_file)
+                    continue
+                image_file = f'{o}-frame{f}.jpg'
                 dest = f'{image_outdir}/{image_file}'
                 shutil.copy(orig_image_file, dest)
-                json_dict['images'].append({"id": image_id, "file_name": image_file, "width": 1280, "height": 720, "date_captured": "", "license": 1, "coco_url": "", "flickr_url": ""})
+                json_dict['images'].append({"id": image_id, "file_name": image_file, "width": 640, "height": 380, "date_captured": "", "license": 1, "coco_url": "", "flickr_url": ""})
                 annotation_id = create_annotations(f, image_file, orientation_df, o, 'both', json_dict, image_id, annotation_id)
             image_id += 1
 
     with open(os.path.join(annotations_outdir , f'instances_{set_type}.json'), 'w') as f_out:
         json.dump(json_dict, f_out)
+    print('dataset prepared in ', os.path.join(annotations_outdir , f'instances_{set_type}.json'))
 
 def save_checkpoint_continual_learning(model, name, saved_path):
     if isinstance(model, CustomDataParallel):
@@ -423,6 +427,8 @@ def continual_train(  weights_path, data_path, saved_path, project_name, gpu, nu
                 except Exception as e:
                     print('[Error]', traceback.format_exc())
                     print(e)
+                    print('Project name is ', project_name)
+                    print('Continunig training ... ')
                     continue
             scheduler.step(np.mean(epoch_loss))
 
@@ -650,6 +656,8 @@ def evaluate_coco(  model, threshold=0.05):
         orientation_to_agg_car_rank = {}
         orientation_to_agg_person_rank = {}
         orientation_to_agg_both_rank = {}
+        big_car_ties = 0
+        big_person_ties = 0
         while current_frame <= args.frame_limit:
             if current_frame % 6 != 0:
                 current_frame += 1
@@ -840,7 +848,7 @@ def evaluate_coco(  model, threshold=0.05):
                 scores = preds['scores']
                 class_ids = preds['class_ids']
                 rois = preds['rois']
-                for thresh in [ 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9]:
+                for thresh in threshes:
                     person_count = 0
                     car_count = 0
                     for i in range(0,len(scores)):
@@ -877,11 +885,11 @@ def evaluate_coco(  model, threshold=0.05):
             gt_orientation_to_person_rank = rank_orientations(gt_orientation_to_person_count)
             gt_orientation_to_both_rank = rank_orientations(gt_orientation_to_both_count)
 
-            best_car_thresh = 0.3
-            best_person_thresh = 0.1
+            best_car_thresh = 0.0
+            best_person_thresh = 0.0
             best_car_rank = 10
             best_person_rank = 10
-            for thresh in [ 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9]:
+            for thresh in threshes:
                 tmp_orientation_to_car_count = thresh_to_orientation_to_car_count[thresh]
                 tmp_orientation_to_person_count = thresh_to_orientation_to_person_count[thresh]
                 tmp_orientation_to_car_rank = rank_orientations(tmp_orientation_to_car_count)
@@ -984,7 +992,8 @@ def evaluate_coco(  model, threshold=0.05):
 
 #            current_car_rank = sum(car_ranks) / len(car_ranks)
             current_car_rank = min(car_ranks)
-
+            if len(car_ranks) > 2:
+                big_car_ties += 1
 
             for o in orientation_to_person_count:
                 if orientation_to_person_count[o] > max_person_count:
@@ -1027,8 +1036,12 @@ def evaluate_coco(  model, threshold=0.05):
                 print('Fixed car rank ', fixed_car_rank)
                 print('Car rank ', current_car_rank)
                 overall_car_ranks.append(current_car_rank)
+
 #            current_person_rank = sum(person_ranks) / len(person_ranks)
             current_person_rank = min(person_ranks)
+            if len(person_ranks) > 2:
+                big_person_ties += 1
+
             if max_gt_person_count > 0:
                 fixed_person_rank = gt_orientation_to_person_rank[best_fixed_person_orientation]
                 overall_fixed_person_ranks.append(fixed_person_rank)
@@ -1102,7 +1115,7 @@ def evaluate_coco(  model, threshold=0.05):
                 generate_dataset(args.inference, args.rectlinear,  current_frame, orientation_to_training_frames, 'train', data_path, temp_project_name)
         #        # Val set
                 generate_dataset(args.inference, args.rectlinear,  current_frame, orientation_to_val_frames, 'val', data_path,  temp_project_name)
-                new_weights_path = continual_train( weights_path, data_path, saved_path, 'test', gpu, num_epochs=5)
+                new_weights_path = continual_train( weights_path, data_path, saved_path, 'test', gpu, num_epochs=10)
                 print('Saved weights ', new_weights_path)
                 model.load_state_dict(torch.load(new_weights_path))
                 model.requires_grad_(False)
@@ -1137,16 +1150,45 @@ def evaluate_coco(  model, threshold=0.05):
 
         print('Overall fixed Car rank is ', fixed_car_rank)
         print('Overall Car rank is ', car_rank)
+        print()
         print('Overall fixed person rank is ', fixed_person_rank)
         print('Overall person rank is ', person_rank)
+        print()
         print('Overall fixed both rank is ', fixed_both_rank)
         print('Overall both rank is ', both_rank)
         print()
+        print('big car ties ', big_car_ties, ', big person ties ', big_person_ties)
         print('Car selection distribution ', orientation_to_car_selected)
         print('ground truth Car selection distribution ', orientation_to_car_selected)
         print('Person selection distribution ', orientation_to_person_selected)
         print('ground truth person selection distribution ', orientation_to_person_selected)
 
+        all_ranks = []
+        if  os.path.exists(args.outfile):
+        
+            with open(args.outfile, 'r') as f:
+                for line in f.readlines():
+                    line = line.replace('[', '').replace(']', '').replace('\'', '').replace('\n', '')
+                    if len(line.strip()) == 0:
+                        ranks = []
+                    else:
+                        ranks = line.split(',')
+                    all_ranks.append(ranks)
+        # Order to write in: first line fixed car rank, second line car rank, third fixed person rank, fourth
+        # line person rank
+        while len(all_ranks) < 4:
+            all_ranks.append([])
+        if fixed_car_rank > 1.1:
+            all_ranks[0].append(fixed_car_rank)
+            all_ranks[1].append(car_rank)
+        if fixed_person_rank > 1.1:
+            all_ranks[2].append(fixed_person_rank)
+            all_ranks[3].append(person_rank)
+        print('All ranks ', all_ranks)
+        with open(args.outfile, 'w') as f:
+            for i in range(0,4):
+                f.write(str(all_ranks[i]).replace('\'', '') )
+                f.write('\n')
 
 if __name__ == '__main__':
 

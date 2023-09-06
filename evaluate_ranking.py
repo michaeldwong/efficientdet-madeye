@@ -35,9 +35,10 @@ ap.add_argument('-c', '--compound_coef', type=int, default=0, help='coefficients
 ap.add_argument('-w', '--weights', type=str, default=None, help='/path/to/weights')
 
 
+ap.add_argument('-o', '--outfile', type=str, default=None, help='/path/to/file')
 ap.add_argument('--nms_threshold', type=float, default=0.5, help='nms threshold, don\'t change it if not for testing purposes')
 ap.add_argument('--cuda', type=boolean_string, default=True)
-ap.add_argument('--device', type=int, default=1)
+ap.add_argument('--device', type=int, default=0)
 ap.add_argument('--float16', type=boolean_string, default=False)
 args = ap.parse_args()
 
@@ -56,6 +57,9 @@ obj_list = params['obj_list']
 
 input_sizes = [512, 640, 768, 896, 1024, 1280, 1280, 1536, 1536]
 
+
+threshes = [ 0.0, 0.2, 0.4 ]
+#threshes = [ 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9]
 
 def generate_neighboring_orientations(current_orientation):
     items = current_orientation.split('-')
@@ -247,9 +251,11 @@ def evaluate_coco(  model, threshold=0.05):
     orientation_to_car_selected = {}
 
     base_orientations = best_fixed_orientations(args.first_frame, args.frame_limit, args.inference, generate_orientations())
+    print('Working with frames ', args.first_frame , ' -- ', args.frame_limit)
     print('base orientations ', base_orientations)
     for base_idx,current_orientation  in enumerate(base_orientations):
 
+        print('BASE_IDX = ', base_idx)
         neighboring_orientations = generate_neighboring_orientations(current_orientation)
         
         current_frame = args.frame_begin
@@ -397,6 +403,9 @@ def evaluate_coco(  model, threshold=0.05):
         current_frame = args.frame_begin
 
         print('Beginning actual evaluation')
+        big_car_ties = 0
+        big_person_ties = 0
+
         while current_frame <= args.frame_limit:
             if current_frame % 6 != 0:
                 current_frame += 1
@@ -458,7 +467,7 @@ def evaluate_coco(  model, threshold=0.05):
                 class_ids = preds['class_ids']
                 rois = preds['rois']
 
-                for thresh in [ 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9]:
+                for thresh in threshes:
                     person_count = 0
                     car_count = 0
                     for i in range(0,len(scores)):
@@ -489,18 +498,17 @@ def evaluate_coco(  model, threshold=0.05):
                 gt_orientation_to_person_count[o] /= max_gt_person_count
                 gt_orientation_to_both_count[o] = gt_orientation_to_car_count[o] + gt_orientation_to_person_count[o]
 
-            current_frame += 1
 
 
             gt_orientation_to_car_rank = rank_orientations(gt_orientation_to_car_count)
             gt_orientation_to_person_rank = rank_orientations(gt_orientation_to_person_count)
             gt_orientation_to_both_rank = rank_orientations(gt_orientation_to_both_count)
 
-            best_car_thresh = 0.3
-            best_person_thresh = 0.1
+            best_car_thresh = 0.0
+            best_person_thresh = 0.0
             best_car_rank = 10
             best_person_rank = 10
-            for thresh in [ 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7, 0.9]:
+            for thresh in threshes:
                 tmp_orientation_to_car_count = thresh_to_orientation_to_car_count[thresh]
                 tmp_orientation_to_person_count = thresh_to_orientation_to_person_count[thresh]
                 tmp_orientation_to_car_rank = rank_orientations(tmp_orientation_to_car_count)
@@ -593,7 +601,8 @@ def evaluate_coco(  model, threshold=0.05):
 
 #            current_car_rank = sum(car_ranks) / len(car_ranks)
             current_car_rank = min(car_ranks)
-
+            if len(car_ranks) > 2:
+                big_car_ties += 1
 
             for o in orientation_to_person_count:
                 if orientation_to_person_count[o] > max_person_count:
@@ -630,6 +639,10 @@ def evaluate_coco(  model, threshold=0.05):
 
             current_person_rank =  min(person_ranks)
 #            current_person_rank = sum(person_ranks) / len(person_ranks)
+            if len(person_ranks) > 2:
+                big_person_ties += 1
+
+
             if max_gt_person_count > 0:
                 fixed_person_rank = gt_orientation_to_person_rank[best_fixed_person_orientation]
                 overall_fixed_person_ranks.append(fixed_person_rank)
@@ -661,6 +674,7 @@ def evaluate_coco(  model, threshold=0.05):
                 print('Fixed both rank ', fixed_both_rank)
                 print('Both rank ', current_both_rank)
                 overall_both_ranks.append(current_both_rank)
+            current_frame += 1
 
         if len(overall_car_ranks) == 0:
             car_rank = -1.0
@@ -688,16 +702,45 @@ def evaluate_coco(  model, threshold=0.05):
 
         print('Overall fixed Car rank is ', fixed_car_rank)
         print('Overall Car rank is ', car_rank)
+        print()
         print('Overall fixed person rank is ', fixed_person_rank)
         print('Overall person rank is ', person_rank)
+        print()
         print('Overall fixed both rank is ', fixed_both_rank)
         print('Overall both rank is ', both_rank)
         print()
+        print('big car ties ', big_car_ties, ', big person ties ', big_person_ties)
         print('Car selection distribution ', orientation_to_car_selected)
         print('ground truth Car selection distribution ', orientation_to_car_selected)
         print('Person selection distribution ', orientation_to_person_selected)
         print('ground truth person selection distribution ', orientation_to_person_selected)
 
+        all_ranks = []
+        if  os.path.exists(args.outfile):
+        
+            with open(args.outfile, 'r') as f:
+                for line in f.readlines():
+                    line = line.replace('[', '').replace(']', '').replace('\'', '').replace('\n', '')
+                    if len(line.strip()) == 0:
+                        ranks = []
+                    else:
+                        ranks = line.split(',')
+                    all_ranks.append(ranks)
+        # Order to write in: first line fixed car rank, second line car rank, third fixed person rank, fourth
+        # line person rank
+        while len(all_ranks) < 4:
+            all_ranks.append([])
+        if fixed_car_rank > 1.1:
+            all_ranks[0].append(fixed_car_rank)
+            all_ranks[1].append(car_rank)
+        if fixed_person_rank > 1.1:
+            all_ranks[2].append(fixed_person_rank)
+            all_ranks[3].append(person_rank)
+        print('All ranks ', all_ranks)
+        with open(args.outfile, 'w') as f:
+            for i in range(0,4):
+                f.write(str(all_ranks[i]).replace('\'', '') )
+                f.write('\n')
 
 if __name__ == '__main__':
 
