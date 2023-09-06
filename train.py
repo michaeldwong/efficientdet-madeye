@@ -2,6 +2,7 @@
 # adapted from https://github.com/signatrix/efficientdet/blob/master/train.py
 # modified by Zylo117
 
+import random
 import argparse
 import datetime
 import os
@@ -44,6 +45,8 @@ def get_args():
     parser.add_argument('--optim', type=str, default='adamw', help='select optimizer for training, '
                                                                    'suggest using \'admaw\' until the'
                                                                    ' very final stage then switch to \'sgd\'')
+
+    parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--num_epochs', type=int, default=500)
     parser.add_argument('--val_interval', type=int, default=1, help='Number of epoches between valing phases')
     parser.add_argument('--save_interval', type=int, default=10000, help='Number of steps between saving')
@@ -108,8 +111,9 @@ def continual_train(params,  weights_path, data_path, saved_path, project_name, 
     else:
         torch.manual_seed(42)
 
+    gpu_id = 0
     # TODO: CHange this when  using different GPUs
-    torch.cuda.set_device('cuda:1')
+    torch.cuda.set_device(f'cuda:{gpu_id}')
 
 
 
@@ -143,7 +147,7 @@ def continual_train(params,  weights_path, data_path, saved_path, project_name, 
                                  ratios=eval(params.anchors_ratios), scales=eval(params.anchors_scales))
 
     try:
-        ret = model.load_state_dict(torch.load(weights_path , map_location={'cuda:0':'cuda:1'} ),strict=False)
+        ret = model.load_state_dict(torch.load(weights_path  ),strict=False)
     except RuntimeError as e:
         print(f'[Warning] Ignoring {e}')
         print(
@@ -199,7 +203,7 @@ def continual_train(params,  weights_path, data_path, saved_path, project_name, 
 
     step = 0
     num_iter_per_epoch = len(training_generator)
-    min_loss = 0.0
+    min_loss = 10000.0
     try:
         for epoch in range(num_epochs):
             last_epoch = step // num_iter_per_epoch
@@ -248,13 +252,16 @@ def continual_train(params,  weights_path, data_path, saved_path, project_name, 
 
                     if step % save_interval == 0 and step > 0:
                         save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_{epoch}.pth', os.path.join(saved_path, project_name))
-                    if loss < min_loss:
-                        save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_min.pth', os.path.join(saved_path, project_name))
 
                 except Exception as e:
                     print('[Error]', traceback.format_exc())
                     print(e)
                     continue
+            print('Epoch loss = ', np.mean(epoch_loss), ' min loss observed ', min_loss)
+            if np.mean(epoch_loss) < min_loss:
+                print('Saving min loss. reg_loss = ', reg_loss , ' CLR loss = ', cls_loss)
+                save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_min.pth', os.path.join(saved_path, project_name))
+                min_loss = np.mean(epoch_loss)
             scheduler.step(np.mean(epoch_loss))
 
             # VAlidation testing
@@ -315,6 +322,7 @@ def continual_train(params,  weights_path, data_path, saved_path, project_name, 
     return best_weights
 
 def train(opt):
+    compound_coef = 0
     params = Params(f'projects/{opt.project}.yml')
 
     if params.num_gpus == 0:
@@ -325,8 +333,9 @@ def train(opt):
     else:
         torch.manual_seed(42)
 
+    gpu_id = opt.gpu
     # TODO: CHange this when  using different GPUs
-    torch.cuda.set_device('cuda:1')
+    torch.cuda.set_device(f'cuda:{gpu_id}')
 
     opt.saved_path = opt.saved_path + f'/{params.project_name}/'
     opt.log_path = opt.log_path + f'/{params.project_name}/tensorboard/'
@@ -372,7 +381,7 @@ def train(opt):
             last_step = 0
 
         try:
-            ret = model.load_state_dict(torch.load(weights_path , map_location={'cuda:0':'cuda:1'} ),strict=False)
+            ret = model.load_state_dict(torch.load(weights_path  ),strict=False)
         except RuntimeError as e:
             print(f'[Warning] Ignoring {e}')
             print(
@@ -429,13 +438,13 @@ def train(opt):
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, verbose=True)
 
     epoch = 0
-    best_loss = 1e5
+    best_val_loss = 10000
     best_epoch = 0
     step = max(0, last_step)
     model.train()
 
     num_iter_per_epoch = len(training_generator)
-    min_loss = 0.0
+    best_train_loss = 10000
     try:
         for epoch in range(opt.num_epochs):
             last_epoch = step // num_iter_per_epoch
@@ -451,7 +460,6 @@ def train(opt):
                 try:
                     imgs = data['img']
                     annot = data['annot']
-
                     if params.num_gpus == 1:
                         # if only one gpu, just send it to cuda:0
                         # elif multiple gpus, send it to multiple gpus in CustomDataParallel, not here
@@ -490,15 +498,19 @@ def train(opt):
                     if step % opt.save_interval == 0 and step > 0:
                         save_checkpoint(model, f'efficientdet-d{opt.compound_coef}_{epoch}_{step}.pth')
                         print('checkpoint...')
-                    if loss < min_loss:
-                        save_checkpoint(model, f'efficientdet-d{opt.compound_coef}_min.pth')
-                        print('min checkpoint...')
 
                 except Exception as e:
                     print('[Error]', traceback.format_exc())
                     print(e)
                     continue
+
+            print('Train Epoch loss = ', np.mean(epoch_loss), ' min loss observed ', best_train_loss)
+            if np.mean(epoch_loss) < best_train_loss:
+                print('Saving min loss. reg_loss = ', reg_loss , ' CLR loss = ', cls_loss)
+                save_checkpoint(model, f'efficientdet-d{opt.compound_coef}_train_min.pth')
+                best_train_loss = np.mean(epoch_loss)
             scheduler.step(np.mean(epoch_loss))
+
 
             if epoch % opt.val_interval == 0:
                 model.eval()
@@ -535,11 +547,14 @@ def train(opt):
                 writer.add_scalars('Regression_loss', {'val': reg_loss}, step)
                 writer.add_scalars('Classfication_loss', {'val': cls_loss}, step)
 
-                if loss + opt.es_min_delta < best_loss:
-                    best_loss = loss
+                if loss + opt.es_min_delta < best_val_loss:
+                    print('Saving val min loss. loss = ', loss, ' prev val loss ', best_val_loss)
+                    best_val_loss =  loss
                     best_epoch = epoch
 
+#                    save_checkpoint_continual_learning(model, f'efficientdet-d{compound_coef}_val_min.pth', os.path.join(opt.saved_path, params.project_name))
                     save_checkpoint(model, f'efficientdet-d{opt.compound_coef}_{epoch}_{step}.pth')
+                    save_checkpoint(model, f'efficientdet-d{opt.compound_coef}_val_min.pth')
 
                 model.train()
 

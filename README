@@ -1,0 +1,13 @@
+
+evaluate_ranking_count_cnn.py rankings for count CNN
+evaluate_ranking.py has rankings for EfficientDet
+evaluate_ranking_continual_learning.py has rankigns with continual learning
+
+
+To run these, look at these scripts
+
+run_normal_ranking_evaluations.sh
+run_continual_learning_exps.sh
+run_count_cnn_ranking_evaluations.sh
+
+count_cnn.py has utils and neural net for count CNN
